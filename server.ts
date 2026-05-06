@@ -97,12 +97,36 @@ if (bot) {
   // Main menu keyboard
   const mainKeyboard = new Keyboard()
     .text("📦 Мои конфиги")
+    .text("🆘 Нужна новая конфига")
     .resized();
 
   bot.command("start", async (ctx) => {
     await ctx.reply("Привет! Я бот для раздачи VPN-конфигов Amnezia. Нажми кнопку ниже, чтобы получить свои файлы.", {
       reply_markup: mainKeyboard,
     });
+  });
+
+  // User: Request new config
+  bot.hears("🆘 Нужна новая конфига", async (ctx) => {
+    const tgId = ctx.from.id;
+    const userName = ctx.from.first_name || ctx.from.username || "Unknown";
+
+    // Find nickname by TG ID to make notification more informative
+    const mappings = await getMappings();
+    const userMapping = mappings.find(m => m.telegramId === tgId);
+    const nickname = userMapping ? userMapping.nickname : "Не зарегистрирован";
+
+    if (adminId) {
+      try {
+        await bot.api.sendMessage(adminId, `⚠️ **Запрос новой конфигурации!**\n\n👤 Пользователь: ${userName}\n🆔 TG ID: ${tgId}\nNickname: ${nickname}`);
+        await ctx.reply("✅ Запрос отправлен администратору. Вам сообщат, когда новый конфиг будет готов.");
+      } catch (err) {
+        console.error("Failed to notify admin:", err);
+        await ctx.reply("❌ Ошибка при отправке запроса. Попробуйте позже или напишите админу напрямую.");
+      }
+    } else {
+      await ctx.reply("❌ Администратор еще не настроил свой ID в боте. Запрос не может быть доставлен.");
+    }
   });
 
   // Admin: Handling document uploads
