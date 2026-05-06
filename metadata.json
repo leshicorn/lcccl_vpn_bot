@@ -1,0 +1,6 @@
+{
+  "name": "VPN Family Bot",
+  "description": "A Telegram bot that manages and distributes Amnezia VPN configurations to family members based on filename mapping.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
