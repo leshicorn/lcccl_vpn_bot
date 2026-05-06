@@ -1,20 +1,81 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# VPN Family Bot
 
-# Run and deploy your AI Studio app
+Максимально простой Telegram-бот и админ-панель для раздачи VPN-конфигураций (Amnezia) семье и друзьям.
 
-This contains everything you need to run your app locally.
+👉 **Без баз данных (хранит всё в простых JSON файлах)**
+👉 **Запускается одной командой**
+👉 **Автоматическая привязка конфигов к Telegram ID по имени файла**
 
-View your app in AI Studio: https://ai.studio/apps/0554871c-1509-4504-bd66-881692da7808
+## 🚀 Как развернуть на VPS
 
-## Run Locally
+### Шаг 1: Подготовка сервера
 
-**Prerequisites:**  Node.js
+Убедитесь, что у вас установлен Node.js (рекомендуется версия 18+) и npm.
 
+```bash
+# Для Ubuntu/Debian:
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### Шаг 2: Скачивание проекта
+
+Склонируйте репозиторий или загрузите архив с исходным кодом к себе на сервер.
+
+```bash
+cd vpn-family-bot
+npm install
+```
+
+### Шаг 3: Настройка окружения
+
+Создайте файл `.env` в корне проекта на основе `.env.example`:
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Отредактируйте переменные в `.env`:
+* `TELEGRAM_BOT_TOKEN="ВАШ_ТОКЕН_ОТ_BOTFATHER"` (создайте бота через [@BotFather](https://t.me/BotFather))
+* `ADMIN_TG_ID="ВАШ_ЧИСЛОВОЙ_TELEGRAM_ID"` (узнайте свой ID через бота [@userinfobot](https://t.me/userinfobot))
+* *APP_URL можно оставить пустым или указать свой IP/домен, если планируете обращаться к панели извне.*
+
+### Шаг 4: Запуск проекта
+
+Сначала соберите frontend-часть приложения:
+
+```bash
+npm run build
+```
+
+Затем запустите сервер с помощью PM2 (рекомендуется для VPS):
+
+```bash
+# Установить PM2
+sudo npm install -g pm2
+
+# Запустить проект
+pm2 start npm --name "vpn-bot" -- run start
+
+# Настроить автозапуск при перезагрузке
+pm2 startup
+pm2 save
+```
+
+## 🛠 Использование
+
+1. Перейдите в админ-панель: `http://ВАС_IP_АДРЕС:3000` (Убедитесь, что порт 3000 открыт в файрволе сервера).
+2. Зарегистрируйте пользователей (укажите Никнейм и их Telegram ID).
+3. Создайте конфиг-файл в Amnezia VPN. Назовите его в формате `<никнейм>_<устройство>.conf` (например: `natalya_iphone.conf`).
+4. Отправьте этот файл боту в Telegram со своего аккаунта (вы должны быть администратором с правильным `ADMIN_TG_ID`).
+5. Бот автоматически распознает файл, сохранит его и привяжет к пользователю.
+6. Пользователь, открыв бота, сможет нажать "Мои конфиги" и сразу их получить.
+
+## 📁 Структура хранилища
+
+Приложение не требует настройки SQL или Firebase. Все данные бережно хранятся в папке `data/`:
+- `data/mappings.json` — соответствия пользователей и Telegram ID
+- `data/configs/` — загруженные файлы `.conf`
+
+С резервным копированием всё просто — скопируйте папку `data/` и всё!

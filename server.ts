@@ -1,27 +1,84 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { Bot, Keyboard, InputFile } from 'grammy';
-import * as admin from 'firebase-admin';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
-import fs from 'fs';
+import fs from 'fs/promises';
+import { existsSync, mkdirSync } from 'fs';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Load Firebase Config
-const firebaseConfig = JSON.parse(fs.readFileSync(path.join(__dirname, 'firebase-applet-config.json'), 'utf-8'));
+// -----------------------------------------------------------------------------
+// Local DB Logic (Simple JSON storage for VPS)
+// -----------------------------------------------------------------------------
+const DATA_DIR = path.join(__dirname, 'data');
+const MAPPINGS_FILE = path.join(DATA_DIR, 'mappings.json');
+const CONFIGS_DIR = path.join(DATA_DIR, 'configs');
 
-// Initialize Firebase Admin
-if (!admin.apps || admin.apps.length === 0) {
-  admin.initializeApp({
-    projectId: firebaseConfig.projectId,
-  });
+// Ensure directories exist
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR);
+if (!existsSync(CONFIGS_DIR)) mkdirSync(CONFIGS_DIR);
+
+interface Mapping {
+  nickname: string;
+  telegramId: number;
 }
 
-const db = admin.firestore(firebaseConfig.firestoreDatabaseId);
+interface VpnConfig {
+  id: string; // nickname_device
+  nickname: string;
+  device: string;
+  fileName: string;
+  content: string;
+  updatedAt: number;
+}
+
+async function getMappings(): Promise<Mapping[]> {
+  try {
+    const data = await fs.readFile(MAPPINGS_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    return []; // Return empty array if file doesn't exist yet
+  }
+}
+
+async function saveMappings(mappings: Mapping[]) {
+  await fs.writeFile(MAPPINGS_FILE, JSON.stringify(mappings, null, 2), 'utf-8');
+}
+
+async function getConfig(id: string): Promise<VpnConfig | null> {
+  const filePath = path.join(CONFIGS_DIR, `${id}.json`);
+  try {
+    const data = await fs.readFile(filePath, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function saveConfig(config: VpnConfig) {
+  const filePath = path.join(CONFIGS_DIR, `${config.id}.json`);
+  await fs.writeFile(filePath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+async function getUserConfigs(nickname: string): Promise<VpnConfig[]> {
+  try {
+    const files = await fs.readdir(CONFIGS_DIR);
+    const configs: VpnConfig[] = [];
+    for (const file of files) {
+      if (file.startsWith(`${nickname}_`) && file.endsWith('.json')) {
+        const data = await fs.readFile(path.join(CONFIGS_DIR, file), 'utf-8');
+        configs.push(JSON.parse(data));
+      }
+    }
+    return configs;
+  } catch (err) {
+    return [];
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Telegram Bot Logic
@@ -69,10 +126,10 @@ if (bot) {
     const device = devicePart.toLowerCase();
 
     // Check if user exists in mappings
-    const mappingRef = db.collection('mappings').doc(nickname);
-    const mappingSnap = await mappingRef.get();
+    const mappings = await getMappings();
+    const userMapping = mappings.find(m => m.nickname === nickname);
 
-    if (!mappingSnap.exists) {
+    if (!userMapping) {
       await ctx.reply(`⚠️ Пользователь "${nickname}" не найден в списке разрешенных. Файл не сохранен.`);
       return;
     }
@@ -84,14 +141,15 @@ if (bot) {
       const response = await fetch(fileUrl);
       const content = await response.text();
 
-      // Save to Firestore
+      // Save to local storage
       const configId = `${nickname}_${device}`;
-      await db.collection('configs').doc(configId).set({
+      await saveConfig({
+        id: configId,
         nickname,
         device,
         content,
         fileName,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: Date.now(),
       });
 
       await ctx.reply(`✅ Конфиг сохранен для ${nickname} (${device})`);
@@ -106,27 +164,27 @@ if (bot) {
     const tgId = ctx.from.id;
 
     // Find nickname by TG ID
-    const mappingQuery = await db.collection('mappings').where('telegramId', '==', tgId).get();
+    const mappings = await getMappings();
+    const userMapping = mappings.find(m => m.telegramId === tgId);
     
-    if (mappingQuery.empty) {
+    if (!userMapping) {
       await ctx.reply("😔 Вы не найдены в списке разрешенных пользователей. Обратитесь к администратору.");
       return;
     }
 
-    const nickname = mappingQuery.docs[0].id;
+    const nickname = userMapping.nickname;
 
     // Get all configs for this nickname
-    const configsQuery = await db.collection('configs').where('nickname', '==', nickname).get();
+    const userConfigs = await getUserConfigs(nickname);
 
-    if (configsQuery.empty) {
+    if (userConfigs.length === 0) {
       await ctx.reply("📭 У вас пока нет доступных конфигураций.");
       return;
     }
 
-    await ctx.reply(`Найдено конфигов: ${configsQuery.size}. Отправляю...`);
+    await ctx.reply(`Найдено конфигов: ${userConfigs.length}. Отправляю...`);
 
-    for (const configDoc of configsQuery.docs) {
-      const data = configDoc.data();
+    for (const data of userConfigs) {
       const buffer = Buffer.from(data.content, 'utf-8');
       await ctx.replyWithDocument(new InputFile(buffer, data.fileName));
     }
@@ -153,9 +211,10 @@ async function startServer() {
   // API: Get Mappings
   app.get("/api/mappings", async (req, res) => {
     try {
-      const snapshot = await db.collection('mappings').get();
-      const mappings = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      res.json(mappings);
+      const mappings = await getMappings();
+      // add id field for frontend compatibility
+      const mappingsWithId = mappings.map(m => ({ id: m.nickname, ...m }));
+      res.json(mappingsWithId);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch mappings" });
     }
@@ -168,10 +227,19 @@ async function startServer() {
       return res.status(400).json({ error: "Nickname and Telegram ID required" });
     }
     try {
-      await db.collection('mappings').doc(nickname.toLowerCase()).set({
-        nickname: nickname.toLowerCase(),
-        telegramId: parseInt(telegramId),
-      });
+      const mappings = await getMappings();
+      const targetNickname = nickname.toLowerCase();
+      const existingIndex = mappings.findIndex(m => m.nickname === targetNickname);
+      
+      const newMapping = { nickname: targetNickname, telegramId: parseInt(telegramId) };
+      
+      if (existingIndex >= 0) {
+        mappings[existingIndex] = newMapping;
+      } else {
+        mappings.push(newMapping);
+      }
+      
+      await saveMappings(mappings);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to save mapping" });
@@ -181,7 +249,9 @@ async function startServer() {
   // API: Delete Mapping
   app.delete("/api/mappings/:id", async (req, res) => {
     try {
-      await db.collection('mappings').doc(req.params.id).delete();
+      let mappings = await getMappings();
+      mappings = mappings.filter(m => m.nickname !== req.params.id);
+      await saveMappings(mappings);
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: "Failed to delete mapping" });
