@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import { Bot, Keyboard, InputFile } from 'grammy';
+import { Bot, Keyboard, InputFile, GrammyError, HttpError } from 'grammy';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -191,11 +191,34 @@ if (bot) {
   });
 
   bot.catch((err) => {
-    console.error("Bot error:", err);
+    const error = err.error;
+    if (error instanceof GrammyError) {
+      if (error.description.includes('terminated by other getUpdates request')) {
+        console.warn("⚠️ Бот запущен в другом месте. Этот экземпляр будет ждать своей очереди.");
+        return;
+      }
+      console.error("Error in response:", error.description);
+    } else if (err instanceof HttpError) {
+      console.error("Could not contact Telegram:", err);
+    } else {
+      console.error("Unknown error:", err);
+    }
   });
 
-  bot.start();
-  console.log("Telegram Bot started.");
+  bot.start({
+    onStart: (botInfo) => {
+      console.log(`Telegram Bot @${botInfo.username} started.`);
+    },
+  });
+
+  // Handle graceful shutdown
+  const stopBot = async () => {
+    console.log("Stopping bot...");
+    await bot.stop();
+  };
+
+  process.once("SIGINT", stopBot);
+  process.once("SIGTERM", stopBot);
 }
 
 // -----------------------------------------------------------------------------
@@ -217,6 +240,68 @@ async function startServer() {
       res.json(mappingsWithId);
     } catch (error) {
       res.status(500).json({ error: "Failed to fetch mappings" });
+    }
+  });
+
+  // API: Get All Configs
+  app.get("/api/configs", async (req, res) => {
+    try {
+      const files = await fs.readdir(CONFIGS_DIR);
+      const configs = [];
+      for (const file of files) {
+        if (file.endsWith('.json')) {
+          const data = await fs.readFile(path.join(CONFIGS_DIR, file), 'utf-8');
+          configs.push(JSON.parse(data));
+        }
+      }
+      res.json(configs);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch configs" });
+    }
+  });
+
+  // API: Upload Config via Web
+  app.post("/api/configs", async (req, res) => {
+    const { fileName, content } = req.body;
+    if (!fileName || !content) {
+      return res.status(400).json({ error: "File name and content required" });
+    }
+
+    const match = fileName.match(/^([a-z0-9]+)_([a-z0-9]+)\.conf$/i);
+    if (!match) {
+      return res.status(400).json({ error: "Invalid filename format. Expected user_device.conf" });
+    }
+
+    const [_, userPart, devicePart] = match;
+    const nickname = userPart.toLowerCase();
+    const device = devicePart.toLowerCase();
+
+    const mappings = await getMappings();
+    if (!mappings.find(m => m.nickname === nickname)) {
+      return res.status(400).json({ error: `User ${nickname} not found in mappings` });
+    }
+
+    const configId = `${nickname}_${device}`;
+    await saveConfig({
+      id: configId,
+      nickname,
+      device,
+      content,
+      fileName,
+      updatedAt: Date.now(),
+    });
+
+    res.json({ success: true });
+  });
+
+  // API: Delete Config
+  app.delete("/api/configs/:id", async (req, res) => {
+    try {
+      const filePath = path.join(CONFIGS_DIR, `${req.params.id}.json`);
+      await fs.unlink(filePath);
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete config" });
     }
   });
 
